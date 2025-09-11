@@ -37,7 +37,7 @@ async def stream_structured_predict_with_events(
 ):
     """Streaming version that yields UI events"""
     try:
-        stream_generator = Settings.llm.astream_structured_predict(
+        stream_generator = await Settings.llm.astream_structured_predict(
             output_cls, prompt_template, **prompt_args
         )
 
