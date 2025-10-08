@@ -11,12 +11,13 @@ import { getApiUrl } from "@/lib/config";
 import { formatDistanceToNow } from "date-fns";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { AgenticSession, CreateAgenticSessionRequest, RFEWorkflow, WorkflowPhase } from "@/types/agentic-session";
-import { WORKFLOW_PHASE_LABELS } from "@/lib/agents";
+import { WORKFLOW_PHASE_LABELS, AVAILABLE_AGENTS } from "@/lib/agents";
 import { ArrowLeft, Play, Loader2, FolderTree, Plus, Trash2, AlertCircle, Sprout } from "lucide-react";
 import { Upload, CheckCircle2 } from "lucide-react";
 import RepoBrowser from "@/components/RepoBrowser";
 import type { GitHubFork } from "@/types";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 export default function ProjectRFEDetailPage() {
   const params = useParams();
@@ -73,6 +74,7 @@ export default function ProjectRFEDetailPage() {
     checking: true,
     isSeeded: false,
   });
+  const [selectedAgent, setSelectedAgent] = useState<string>("Emma (Engineering Manager)");
 
   const load = useCallback(async () => {
     try {
@@ -376,6 +378,21 @@ export default function ProjectRFEDetailPage() {
                                  phase === "implement" ? "requires tasks.md" : ""}
                               </span>
                             )}
+                            {!exists && phase === "specify" && (
+                              <Select value={selectedAgent} onValueChange={setSelectedAgent}>
+                                <SelectTrigger className="w-[240px]">
+                                  <SelectValue placeholder="Select agent" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="none">None (no agent)</SelectItem>
+                                  {AVAILABLE_AGENTS.map((agent) => (
+                                    <SelectItem key={agent.persona} value={agent.name}>
+                                      {agent.name}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            )}
                             {!exists && (
                               phase === "ideate"
                                 ? (
@@ -462,11 +479,18 @@ export default function ProjectRFEDetailPage() {
                                       try {
                                         setStartingPhase(phase);
                                         const isSpecify = phase === "specify";
-                                        const prompt = isSpecify
+
+                                        // Build prompt with optional agent invocation
+                                        const basePrompt = isSpecify
                                           ? (rfeDoc.exists
                                               ? "/specify Develop a new feature on top of the projects in /repos based on rfe.md"
                                               : `/specify Develop a new feature on top of the projects in /repos. Feature requirements: ${workflow.description}`)
-                                          : `/${phase}`
+                                          : `/${phase}`;
+
+                                        // For specify phase, prepend agent invocation if selected
+                                        const prompt = (isSpecify && selectedAgent && selectedAgent !== "none")
+                                          ? `invoke ${selectedAgent} for ${basePrompt}`
+                                          : basePrompt;
                                         const payload: CreateAgenticSessionRequest = {
                                           prompt,
                                           displayName: `${workflow.title} - ${phase}`,
