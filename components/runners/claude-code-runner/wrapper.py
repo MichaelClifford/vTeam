@@ -342,18 +342,18 @@ class ClaudeCodeAdapter:
                 ambient_config=ambient_config
             )
             system_prompt_config = {
-                "type": "text",
-                "text": workspace_prompt
+                "type": "preset",
+                "preset":"claude_code"
             }
             logging.info(f"Applied workspace context system prompt (length: {len(workspace_prompt)} chars)")
 
-            # Configure SDK options with session resumption if continuing
+            # Configure SDK options with session resumption if continuing            
             options = ClaudeAgentOptions(
                 cwd=cwd_path,
                 permission_mode="acceptEdits",
                 allowed_tools= allowed_tools,
                 mcp_servers=mcp_servers,
-                setting_sources=["project"],
+                setting_sources=["project","user"],
                 system_prompt=system_prompt_config
                 )
 
