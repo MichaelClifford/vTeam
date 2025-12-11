@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Plug, Check, Loader2 } from 'lucide-react'
+import { Plug, Check, Loader2, Play, AlertCircle } from 'lucide-react'
 import {
   AccordionItem,
   AccordionTrigger,
@@ -9,6 +9,10 @@ import {
 } from '@/components/ui/accordion'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { getApiBaseUrl } from '@/services/api/client'
+import { useStopSession, useStartSession } from '@/services/queries'
+import { useToast } from '@/hooks/use-toast'
 
 type McpIntegrationsAccordionProps = {
   projectName: string
@@ -21,15 +25,22 @@ export function McpIntegrationsAccordion({
 }: McpIntegrationsAccordionProps) {
   const [googleConnected, setGoogleConnected] = useState(false)
   const [connecting, setConnecting] = useState(false)
+  const [needsReload, setNeedsReload] = useState(false)
+  const [restarting, setRestarting] = useState(false)
+
+  const { toast } = useToast()
+  const stopMutation = useStopSession()
+  const startMutation = useStartSession()
 
   const handleConnectGoogle = async () => {
     setConnecting(true)
 
     try {
-      // Call backend to get OAuth URL
-      const response = await fetch(
-        `/api/projects/${projectName}/agentic-sessions/${sessionName}/oauth/google/url`
-      )
+      // Call backend to get OAuth URL using same base URL pattern as other API calls
+      const apiBase = getApiBaseUrl()
+      const apiPath = `${apiBase}/projects/${projectName}/agentic-sessions/${sessionName}/oauth/google/url`
+
+      const response = await fetch(apiPath)
 
       if (!response.ok) {
         const error = await response.json()
@@ -58,6 +69,7 @@ export function McpIntegrationsAccordion({
           setConnecting(false)
           // TODO: Check if credentials were successfully stored
           setGoogleConnected(true)
+          setNeedsReload(true)
         }
       }, 500)
     } catch (error) {
@@ -69,6 +81,45 @@ export function McpIntegrationsAccordion({
   const handleDisconnectGoogle = () => {
     // TODO: Implement disconnect - remove credentials from session
     setGoogleConnected(false)
+    setNeedsReload(false)
+  }
+
+  const handleReloadSession = async () => {
+    setRestarting(true)
+    setNeedsReload(false)
+
+    try {
+      // Stop the session first
+      await stopMutation.mutateAsync({
+        projectName,
+        sessionName,
+      })
+
+      // Wait a moment for the stop to complete
+      await new Promise(resolve => setTimeout(resolve, 1000))
+
+      // Then start it again
+      await startMutation.mutateAsync({
+        projectName,
+        sessionName,
+      })
+
+      toast({
+        title: 'Success',
+        description: 'Session restarted with MCP integration',
+      })
+    } catch (error) {
+      console.error('Failed to restart session:', error)
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: error instanceof Error ? error.message : 'Failed to restart session',
+      })
+      // Show the alert again if restart failed
+      setNeedsReload(true)
+    } finally {
+      setRestarting(false)
+    }
   }
 
   return (
@@ -81,6 +132,41 @@ export function McpIntegrationsAccordion({
       </AccordionTrigger>
       <AccordionContent className="px-1 pb-3">
         <div className="space-y-3">
+          {/* Show reload required alert if MCP server was just connected */}
+          {needsReload && (
+            <Alert variant="info">
+              <AlertCircle />
+              <AlertTitle>
+                Reload required
+              </AlertTitle>
+              <AlertDescription>
+                <div className="space-y-2 mt-2">
+                  <p className="text-sm">
+                    Please reload this chat session to activate the MCP integration. Your chat history will be preserved.
+                  </p>
+                  <Button
+                    onClick={handleReloadSession}
+                    disabled={restarting}
+                    className="w-full mt-3"
+                    size="sm"
+                  >
+                    {restarting ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Restarting...
+                      </>
+                    ) : (
+                      <>
+                        <Play className="mr-2 h-4 w-4" />
+                        Restart Session
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </AlertDescription>
+            </Alert>
+          )}
+
           {/* Google Drive Integration */}
           <div className="flex items-center justify-between p-3 border rounded-lg bg-background/50">
             <div className="flex items-center gap-3">
