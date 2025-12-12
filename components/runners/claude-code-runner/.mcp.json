@@ -9,6 +9,21 @@
         "JIRA_SSL_VERIFY": "true",
         "READ_ONLY_MODE": "true"
       }
+    },
+    "google-workspace": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "workspace-mcp@1.6.1",
+        "--tools",
+        "drive"
+      ],
+      "env": {
+        "GOOGLE_MCP_CREDENTIALS_DIR": "${GOOGLE_MCP_CREDENTIALS_DIR}",
+        "EXTERNAL_OAUTH21_PROVIDER": "true",
+        "MCP_ENABLE_OAUTH21": "true",
+        "WORKSPACE_MCP_STATELESS_MODE": "true"
+      }
     }
   }
 }
