@@ -1303,6 +1303,37 @@ func handleAgenticSessionEvent(obj *unstructured.Unstructured) error {
 		}
 	}
 
+	// Check for Google OAuth secret and mount it if present (for MCP Google Drive integration)
+	googleOAuthSecretName := fmt.Sprintf("%s-google-oauth", name)
+	if _, err := config.K8sClient.CoreV1().Secrets(sessionNamespace).Get(context.TODO(), googleOAuthSecretName, v1.GetOptions{}); err == nil {
+		log.Printf("Found Google OAuth secret %s, mounting to runner container", googleOAuthSecretName)
+		job.Spec.Template.Spec.Volumes = append(job.Spec.Template.Spec.Volumes, corev1.Volume{
+			Name: "google-oauth",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: googleOAuthSecretName,
+					Optional:   boolPtr(true), // Don't fail if secret disappears before pod starts
+				},
+			},
+		})
+		// Mount to the ambient-code-runner container
+		for i := range job.Spec.Template.Spec.Containers {
+			if job.Spec.Template.Spec.Containers[i].Name == "ambient-code-runner" {
+				job.Spec.Template.Spec.Containers[i].VolumeMounts = append(job.Spec.Template.Spec.Containers[i].VolumeMounts, corev1.VolumeMount{
+					Name:      "google-oauth",
+					MountPath: "/app/.google-oauth",
+					ReadOnly:  true,
+				})
+				log.Printf("Mounted Google OAuth secret to /app/.google-oauth in runner container for session %s", name)
+				break
+			}
+		}
+	} else if !errors.IsNotFound(err) {
+		log.Printf("Error checking for Google OAuth secret %s: %v (continuing without MCP)", googleOAuthSecretName, err)
+	} else {
+		log.Printf("No Google OAuth secret found (session %s), MCP Google Drive integration will not be available", name)
+	}
+
 	// Do not mount runner Secret volume; runner fetches tokens on demand
 
 	// Create the job
