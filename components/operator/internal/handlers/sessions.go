@@ -772,6 +772,17 @@ func handleAgenticSessionEvent(obj *unstructured.Unstructured) error {
 		log.Printf("Langfuse disabled, skipping secret copy")
 	}
 
+	// Check for Google OAuth secret (for MCP Google Drive integration)
+	// This needs to be checked before job creation so we can set the env var
+	googleOAuthSecretName := fmt.Sprintf("%s-google-oauth", name)
+	googleOAuthSecretExists := false
+	if _, err := config.K8sClient.CoreV1().Secrets(sessionNamespace).Get(context.TODO(), googleOAuthSecretName, v1.GetOptions{}); err == nil {
+		googleOAuthSecretExists = true
+		log.Printf("Found Google OAuth secret %s, will mount to runner container", googleOAuthSecretName)
+	} else if !errors.IsNotFound(err) {
+		log.Printf("Error checking for Google OAuth secret %s: %v (continuing without MCP)", googleOAuthSecretName, err)
+	}
+
 	// Create a Kubernetes Job for this AgenticSession
 	jobName := fmt.Sprintf("%s-job", name)
 
@@ -1235,6 +1246,15 @@ func handleAgenticSessionEvent(obj *unstructured.Unstructured) error {
 									}
 								}
 
+								// Add Google OAuth credentials directory env var if secret exists
+								// Point to writable location in workspace, not the read-only secret mount
+								if googleOAuthSecretExists {
+									base = append(base, corev1.EnvVar{
+										Name:  "GOOGLE_MCP_CREDENTIALS_DIR",
+										Value: "/workspace/.google-mcp-credentials",
+									})
+								}
+
 								return base
 							}(),
 
@@ -1303,10 +1323,10 @@ func handleAgenticSessionEvent(obj *unstructured.Unstructured) error {
 		}
 	}
 
-	// Check for Google OAuth secret and mount it if present (for MCP Google Drive integration)
-	googleOAuthSecretName := fmt.Sprintf("%s-google-oauth", name)
-	if _, err := config.K8sClient.CoreV1().Secrets(sessionNamespace).Get(context.TODO(), googleOAuthSecretName, v1.GetOptions{}); err == nil {
-		log.Printf("Found Google OAuth secret %s, mounting to runner container", googleOAuthSecretName)
+	// Mount Google OAuth secret if it exists (for MCP Google Drive integration)
+	// Mount to writable workspace location so MCP server can update tokens
+	if googleOAuthSecretExists {
+		googleOAuthMountPath := "/workspace/.google-mcp-credentials"
 		job.Spec.Template.Spec.Volumes = append(job.Spec.Template.Spec.Volumes, corev1.Volume{
 			Name: "google-oauth",
 			VolumeSource: corev1.VolumeSource{
@@ -1316,22 +1336,18 @@ func handleAgenticSessionEvent(obj *unstructured.Unstructured) error {
 				},
 			},
 		})
-		// Mount to the ambient-code-runner container
+		// Mount to the ambient-code-runner container at writable workspace location
 		for i := range job.Spec.Template.Spec.Containers {
 			if job.Spec.Template.Spec.Containers[i].Name == "ambient-code-runner" {
 				job.Spec.Template.Spec.Containers[i].VolumeMounts = append(job.Spec.Template.Spec.Containers[i].VolumeMounts, corev1.VolumeMount{
 					Name:      "google-oauth",
-					MountPath: "/app/.google-oauth",
-					ReadOnly:  true,
+					MountPath: googleOAuthMountPath,
+					ReadOnly:  false, // Writable so MCP server can update tokens
 				})
-				log.Printf("Mounted Google OAuth secret to /app/.google-oauth in runner container for session %s", name)
+				log.Printf("Mounted Google OAuth secret to %s (writable) and set GOOGLE_MCP_CREDENTIALS_DIR env var for session %s", googleOAuthMountPath, name)
 				break
 			}
 		}
-	} else if !errors.IsNotFound(err) {
-		log.Printf("Error checking for Google OAuth secret %s: %v (continuing without MCP)", googleOAuthSecretName, err)
-	} else {
-		log.Printf("No Google OAuth secret found (session %s), MCP Google Drive integration will not be available", name)
 	}
 
 	// Do not mount runner Secret volume; runner fetches tokens on demand

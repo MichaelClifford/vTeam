@@ -17,7 +17,13 @@
         "workspace-mcp@1.6.1",
         "--tools",
         "drive"
-      ]
+      ],
+      "env": {
+        "GOOGLE_MCP_CREDENTIALS_DIR": "${GOOGLE_MCP_CREDENTIALS_DIR}",
+        "MCP_ENABLE_OAUTH21": "true",
+        "EXTERNAL_OAUTH21_PROVIDER": "true",
+        "WORKSPACE_MCP_STATELESS_MODE": "true"
+      }
     }
   }
 }

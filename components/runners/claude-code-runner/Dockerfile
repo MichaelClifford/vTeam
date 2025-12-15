@@ -9,6 +9,13 @@ RUN dnf install -y 'dnf-command(config-manager)' && \
     dnf install -y git jq && \
     dnf clean all
 
+# Install uv for running MCP servers with uvx
+# The installer detects the current user's home and installs to $HOME/.local/bin
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    cp /opt/app-root/src/.local/bin/uv /usr/local/bin/uv && \
+    cp /opt/app-root/src/.local/bin/uvx /usr/local/bin/uvx && \
+    chmod +x /usr/local/bin/uv /usr/local/bin/uvx
+
 # Create working directory
 WORKDIR /app
 
