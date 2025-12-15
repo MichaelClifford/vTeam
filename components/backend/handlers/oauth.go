@@ -226,6 +226,17 @@ func HandleOAuth2Callback(c *gin.Context) {
 	callbackData.ExpiresIn = tokenData.ExpiresIn
 	callbackData.TokenType = tokenData.TokenType
 
+	// Get user email from Google (required for MCP user-specific credentials)
+	userEmail := ""
+	if provider == "google" {
+		userEmail, err = getUserEmailFromGoogle(c.Request.Context(), tokenData.AccessToken)
+		if err != nil {
+			log.Printf("Warning: Failed to get user email from Google: %v (continuing without email)", err)
+		} else {
+			log.Printf("Retrieved user email: %s", userEmail)
+		}
+	}
+
 	// Parse session context from state parameter
 	stateData, err := parseOAuthState(state)
 	if err != nil {
@@ -250,6 +261,7 @@ func HandleOAuth2Callback(c *gin.Context) {
 			stateData.ProjectName,
 			stateData.SessionName,
 			provider,
+			userEmail,
 			tokenData.AccessToken,
 			tokenData.RefreshToken,
 			tokenData.ExpiresIn,
@@ -287,6 +299,42 @@ type OAuthTokenResponse struct {
 	ExpiresIn    int64  `json:"expires_in"`
 	TokenType    string `json:"token_type"`
 	Scope        string `json:"scope"`
+}
+
+// getUserEmailFromGoogle retrieves the user's email address from Google using an access token
+func getUserEmailFromGoogle(ctx context.Context, accessToken string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.googleapis.com/oauth2/v2/userinfo", nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", accessToken))
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to get userinfo: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("userinfo request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var userInfo struct {
+		Email         string `json:"email"`
+		VerifiedEmail bool   `json:"verified_email"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
+		return "", fmt.Errorf("failed to decode userinfo: %w", err)
+	}
+
+	if userInfo.Email == "" {
+		return "", fmt.Errorf("no email in userinfo response")
+	}
+
+	return userInfo.Email, nil
 }
 
 // exchangeOAuthCode exchanges an authorization code for an access token
@@ -535,16 +583,39 @@ func writeCredentialsToSessionPVC(ctx context.Context, projectName, sessionName,
 // Secret name: {sessionName}-{provider}-oauth (e.g., agentic-session-123-google-oauth)
 // This allows the session pod to mount or read the credentials from its own namespace
 // The Secret is owned by the AgenticSession CR, so it's automatically deleted when the session is deleted
-func storeCredentialsInSecret(ctx context.Context, projectName, sessionName, provider, accessToken, refreshToken string, expiresIn int64) error {
+//
+// For Google OAuth with workspace-mcp:
+// - Creates credentials in Google "authorized user" format
+// - Stores user-specific credentials file named {userEmail}.json
+// - Also stores user.txt file containing the user email for easy lookup
+func storeCredentialsInSecret(ctx context.Context, projectName, sessionName, provider, userEmail, accessToken, refreshToken string, expiresIn int64) error {
 	secretName := fmt.Sprintf("%s-%s-oauth", sessionName, provider)
 
-	// Prepare credentials JSON
+	// Get OAuth provider config for client_id and client_secret
+	providerConfig, err := getOAuthProvider(provider)
+	if err != nil {
+		return fmt.Errorf("failed to get OAuth provider config: %w", err)
+	}
+
+	// Prepare credentials JSON in Google "authorized user" format
+	// This format is compatible with google-auth library and workspace-mcp
+	// Required fields: type, refresh_token, client_id, client_secret
 	credentials := map[string]interface{}{
-		"access_token":  accessToken,
+		"type":          "authorized_user",
+		"client_id":     providerConfig.ClientID,
+		"client_secret": providerConfig.ClientSecret,
 		"refresh_token": refreshToken,
-		"token_type":    "Bearer",
-		"expires_in":    expiresIn,
-		"created_at":    time.Now().Unix(),
+	}
+
+	// Optional fields for Google auth library
+	if providerConfig.TokenURL != "" {
+		credentials["token_uri"] = providerConfig.TokenURL
+	}
+	if accessToken != "" {
+		credentials["token"] = accessToken
+	}
+	if expiresIn > 0 {
+		credentials["expiry"] = time.Now().Add(time.Duration(expiresIn) * time.Second).Format(time.RFC3339)
 	}
 
 	credentialsJSON, err := json.MarshalIndent(credentials, "", "  ")
@@ -573,6 +644,27 @@ func storeCredentialsInSecret(ctx context.Context, projectName, sessionName, pro
 		// BlockOwnerDeletion intentionally omitted (can cause permission issues)
 	}
 
+	// Prepare Secret data
+	secretData := map[string][]byte{
+		"credentials.json": credentialsJSON,
+		"access_token":     []byte(accessToken),
+		"refresh_token":    []byte(refreshToken),
+	}
+
+	// For Google OAuth with workspace-mcp, create user-specific credentials file
+	// The MCP server expects credentials in {userEmail}.json format
+	if provider == "google" && userEmail != "" {
+		// Store user email for reference
+		secretData["user.txt"] = []byte(userEmail)
+
+		// Create user-specific credentials file (e.g., "user@gmail.com.json")
+		// This is what workspace-mcp's LocalDirectoryCredentialStore expects
+		userCredentialFileName := fmt.Sprintf("%s.json", userEmail)
+		secretData[userCredentialFileName] = credentialsJSON
+
+		log.Printf("Creating user-specific credentials file: %s", userCredentialFileName)
+	}
+
 	// Create or update Secret in project namespace
 	secret := &corev1.Secret{
 		ObjectMeta: v1.ObjectMeta{
@@ -587,11 +679,7 @@ func storeCredentialsInSecret(ctx context.Context, projectName, sessionName, pro
 			OwnerReferences: []v1.OwnerReference{ownerRef},
 		},
 		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{
-			"credentials.json": credentialsJSON,
-			"access_token":     []byte(accessToken),
-			"refresh_token":    []byte(refreshToken),
-		},
+		Data: secretData,
 	}
 
 	// Try to create the Secret

@@ -1253,6 +1253,21 @@ func handleAgenticSessionEvent(obj *unstructured.Unstructured) error {
 										Name:  "GOOGLE_MCP_CREDENTIALS_DIR",
 										Value: "/workspace/.google-mcp-credentials",
 									})
+
+									// Add user email from Secret for workspace-mcp authentication
+									// workspace-mcp requires MCP_GOOGLE_USER_EMAIL to identify which credentials to use
+									base = append(base, corev1.EnvVar{
+										Name: "MCP_GOOGLE_USER_EMAIL",
+										ValueFrom: &corev1.EnvVarSource{
+											SecretKeyRef: &corev1.SecretKeySelector{
+												LocalObjectReference: corev1.LocalObjectReference{
+													Name: googleOAuthSecretName,
+												},
+												Key:      "user.txt",
+												Optional: boolPtr(true), // Don't fail if key missing (for backwards compatibility)
+											},
+										},
+									})
 								}
 
 								return base
