@@ -1049,6 +1049,8 @@ func handleAgenticSessionEvent(obj *unstructured.Unstructured) error {
 									{Name: "SESSION_ID", Value: name},
 									{Name: "WORKSPACE_PATH", Value: fmt.Sprintf("/workspace/sessions/%s/workspace", name)},
 									{Name: "ARTIFACTS_DIR", Value: "_artifacts"},
+									// Google MCP credentials directory for workspace-mcp server
+									{Name: "GOOGLE_MCP_CREDENTIALS_DIR", Value: "/app/.google_workspace_mcp/credentials"},
 								}
 
 								// Add user context for observability and auditing (Langfuse userId, logs, etc.)
@@ -1321,10 +1323,10 @@ func handleAgenticSessionEvent(obj *unstructured.Unstructured) error {
 			if job.Spec.Template.Spec.Containers[i].Name == "ambient-code-runner" {
 				job.Spec.Template.Spec.Containers[i].VolumeMounts = append(job.Spec.Template.Spec.Containers[i].VolumeMounts, corev1.VolumeMount{
 					Name:      "google-oauth",
-					MountPath: "/app/.google-oauth",
+					MountPath: "/app/.google_workspace_mcp/credentials",
 					ReadOnly:  true,
 				})
-				log.Printf("Mounted Google OAuth secret to /app/.google-oauth in runner container for session %s", name)
+				log.Printf("Mounted Google OAuth secret to /app/.google_workspace_mcp/credentials in runner container for session %s", name)
 				break
 			}
 		}
