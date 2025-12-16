@@ -4,6 +4,7 @@ import { buildForwardHeadersAsync } from '@/lib/auth';
 type Ctx = { params: Promise<{ name: string; sessionName: string }> };
 
 // GET /api/projects/[name]/agentic-sessions/[sessionName]/oauth/google/url
+// Proxy to backend OAuth URL generation endpoint with HMAC-signed state
 export async function GET(request: Request, { params }: Ctx) {
   try {
     const { name, sessionName } = await params;

@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -92,28 +94,35 @@ func getOAuthProvider(provider string) (*OAuthProvider, error) {
 	}
 }
 
-// GetOAuthURL handles GET /api/projects/:projectName/agentic-sessions/:sessionName/oauth/google/url
-// Returns the OAuth URL for the frontend to open in a popup
+// GetOAuthURL handles GET /api/projects/:projectName/agentic-sessions/:sessionName/oauth/:provider/url
+// Returns the OAuth URL for the frontend to open in a popup with HMAC-signed state parameter
 func GetOAuthURL(c *gin.Context) {
 	projectName := c.Param("projectName")
 	sessionName := c.Param("sessionName")
+	providerName := c.Param("provider")
 
-	// Get Google OAuth provider config
-	provider, err := getOAuthProvider("google")
+	// Default to google if not specified
+	if providerName == "" {
+		providerName = "google"
+	}
+
+	// Get OAuth provider config
+	provider, err := getOAuthProvider(providerName)
 	if err != nil {
 		log.Printf("Failed to get OAuth provider: %v", err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Google OAuth not configured"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": fmt.Sprintf("%s OAuth not configured", providerName)})
 		return
 	}
 
 	// Build state with session context
 	stateData := OAuthStateData{
-		Provider:    "google",
+		Provider:    providerName,
 		ProjectName: projectName,
 		SessionName: sessionName,
 		Timestamp:   time.Now().Unix(),
 	}
 
+	// Serialize state to JSON
 	stateJSON, err := json.Marshal(stateData)
 	if err != nil {
 		log.Printf("Failed to marshal state: %v", err)
@@ -121,7 +130,21 @@ func GetOAuthURL(c *gin.Context) {
 		return
 	}
 
-	state := base64.StdEncoding.EncodeToString(stateJSON)
+	// Get HMAC secret from environment
+	secret := os.Getenv("OAUTH_STATE_SECRET")
+	if secret == "" {
+		log.Printf("OAUTH_STATE_SECRET not configured")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "OAuth state validation not configured"})
+		return
+	}
+
+	// Generate HMAC signature
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write(stateJSON)
+	signature := h.Sum(nil)
+
+	// Combine: base64(json) + "." + base64(signature)
+	stateToken := base64.URLEncoding.EncodeToString(stateJSON) + "." + base64.URLEncoding.EncodeToString(signature)
 
 	// Get backend URL for redirect URI
 	backendURL := os.Getenv("BACKEND_URL")
@@ -130,18 +153,35 @@ func GetOAuthURL(c *gin.Context) {
 	}
 	redirectURI := fmt.Sprintf("%s/oauth2callback", backendURL)
 
-	// Build OAuth URL
-	authURL := fmt.Sprintf(
-		"https://accounts.google.com/o/oauth2/v2/auth?client_id=%s&redirect_uri=%s&response_type=code&scope=%s&access_type=offline&state=%s&prompt=consent",
-		provider.ClientID,
-		redirectURI,
-		strings.Join(provider.Scopes, " "),
-		state,
-	)
+	// Build OAuth URL with signed state
+	var authURL string
+	switch providerName {
+	case "google":
+		authURL = fmt.Sprintf(
+			"https://accounts.google.com/o/oauth2/v2/auth?client_id=%s&redirect_uri=%s&response_type=code&scope=%s&access_type=offline&state=%s&prompt=consent",
+			provider.ClientID,
+			redirectURI,
+			strings.Join(provider.Scopes, " "),
+			stateToken,
+		)
+	case "github":
+		authURL = fmt.Sprintf(
+			"https://github.com/login/oauth/authorize?client_id=%s&redirect_uri=%s&scope=%s&state=%s",
+			provider.ClientID,
+			redirectURI,
+			strings.Join(provider.Scopes, " "),
+			stateToken,
+		)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("unsupported provider: %s", providerName)})
+		return
+	}
+
+	log.Printf("Generated OAuth URL for %s/%s (provider: %s, stateLen: %d)", projectName, sessionName, providerName, len(stateToken))
 
 	c.JSON(http.StatusOK, gin.H{
 		"url":   authURL,
-		"state": state,
+		"state": stateToken,
 	})
 }
 
@@ -230,19 +270,13 @@ func HandleOAuth2Callback(c *gin.Context) {
 	callbackData.ExpiresIn = tokenData.ExpiresIn
 	callbackData.TokenType = tokenData.TokenType
 
-	// Parse session context from state parameter
-	stateData, err := parseOAuthState(state)
+	// Parse and validate session context from signed state parameter
+	stateData, err := validateAndParseOAuthState(state)
 	if err != nil {
-		log.Printf("Warning: Failed to parse state for session context: %v (falling back to temporary storage)", err)
-		// Fallback: store in oauth-callbacks Secret for manual retrieval
-		if err := storeOAuthCallback(c.Request.Context(), state, &callbackData); err != nil {
-			log.Printf("Failed to store OAuth callback: %v", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store OAuth data"})
-			return
-		}
-		log.Printf("OAuth callback stored in temporary storage for state: %s", state[:min(10, len(state))])
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(
-			"<html><body><h1>Authorization Successful!</h1><p>Provider: "+provider+"</p><p>Credentials stored temporarily. Please contact support.</p><p>You can close this window.</p><script>window.close();</script></body></html>",
+		log.Printf("ERROR: State validation failed: %v (possible CSRF attack or tampering)", err)
+		// DO NOT store credentials or proceed - this is a security violation
+		c.Data(http.StatusForbidden, "text/html; charset=utf-8", []byte(
+			"<html><body><h1>Authorization Failed</h1><p>Provider: "+provider+"</p><p><strong>Error:</strong> Invalid or expired state parameter. This may indicate a CSRF attack or session timeout.</p><p>Please try again from the beginning.</p><p>You can close this window.</p><script>window.close();</script></body></html>",
 		))
 		return
 	}
@@ -474,6 +508,7 @@ type OAuthStateData struct {
 }
 
 // parseOAuthState extracts session context from the base64-encoded state parameter
+// DEPRECATED: Use validateAndParseOAuthState for HMAC-signed states
 func parseOAuthState(state string) (*OAuthStateData, error) {
 	// Decode base64
 	decoded, err := base64.StdEncoding.DecodeString(state)
@@ -490,6 +525,66 @@ func parseOAuthState(state string) (*OAuthStateData, error) {
 	if err := json.Unmarshal(decoded, &stateData); err != nil {
 		return nil, fmt.Errorf("failed to parse state JSON: %w", err)
 	}
+
+	return &stateData, nil
+}
+
+// validateAndParseOAuthState validates HMAC signature and extracts session context from signed state token
+// Expected format: base64(json) + "." + base64(signature)
+func validateAndParseOAuthState(state string) (*OAuthStateData, error) {
+	// Split state into data and signature
+	parts := strings.Split(state, ".")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid state format: expected 'data.signature'")
+	}
+
+	encodedData := parts[0]
+	encodedSignature := parts[1]
+
+	// Decode the JSON data
+	stateJSON, err := base64.URLEncoding.DecodeString(encodedData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode state data: %w", err)
+	}
+
+	// Decode the signature
+	receivedSignature, err := base64.URLEncoding.DecodeString(encodedSignature)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode signature: %w", err)
+	}
+
+	// Get HMAC secret from environment
+	secret := os.Getenv("OAUTH_STATE_SECRET")
+	if secret == "" {
+		return nil, fmt.Errorf("OAUTH_STATE_SECRET not configured")
+	}
+
+	// Compute expected signature
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write(stateJSON)
+	expectedSignature := h.Sum(nil)
+
+	// Compare signatures using constant-time comparison to prevent timing attacks
+	if !hmac.Equal(receivedSignature, expectedSignature) {
+		return nil, fmt.Errorf("invalid state signature (possible CSRF attack)")
+	}
+
+	// Parse JSON
+	var stateData OAuthStateData
+	if err := json.Unmarshal(stateJSON, &stateData); err != nil {
+		return nil, fmt.Errorf("failed to parse state JSON: %w", err)
+	}
+
+	// Optional: validate timestamp (5 minute expiry)
+	age := time.Now().Unix() - stateData.Timestamp
+	if age > 300 { // 5 minutes
+		return nil, fmt.Errorf("state token expired (age: %d seconds)", age)
+	}
+	if age < 0 {
+		return nil, fmt.Errorf("state token has future timestamp (possible replay attack)")
+	}
+
+	log.Printf("✓ Validated OAuth state for %s/%s (provider: %s, age: %ds)", stateData.ProjectName, stateData.SessionName, stateData.Provider, age)
 
 	return &stateData, nil
 }
