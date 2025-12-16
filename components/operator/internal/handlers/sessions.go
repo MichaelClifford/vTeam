@@ -1049,8 +1049,11 @@ func handleAgenticSessionEvent(obj *unstructured.Unstructured) error {
 									{Name: "SESSION_ID", Value: name},
 									{Name: "WORKSPACE_PATH", Value: fmt.Sprintf("/workspace/sessions/%s/workspace", name)},
 									{Name: "ARTIFACTS_DIR", Value: "_artifacts"},
-									// Google MCP credentials directory for workspace-mcp server
-									{Name: "GOOGLE_MCP_CREDENTIALS_DIR", Value: "/app/.google_workspace_mcp/credentials"},
+									// Google MCP credentials directory for workspace-mcp server (writable workspace location)
+									{Name: "GOOGLE_MCP_CREDENTIALS_DIR", Value: "/workspace/.google_workspace_mcp/credentials"},
+									// Google OAuth client credentials for workspace-mcp
+									{Name: "GOOGLE_OAUTH_CLIENT_ID", Value: os.Getenv("GOOGLE_OAUTH_CLIENT_ID")},
+									{Name: "GOOGLE_OAUTH_CLIENT_SECRET", Value: os.Getenv("GOOGLE_OAUTH_CLIENT_SECRET")},
 								}
 
 								// Add user context for observability and auditing (Langfuse userId, logs, etc.)

@@ -63,7 +63,11 @@ func getOAuthProvider(provider string) (*OAuthProvider, error) {
 			ClientSecret: clientSecret,
 			TokenURL:     "https://oauth2.googleapis.com/token",
 			Scopes: []string{
+				"openid",
 				"https://www.googleapis.com/auth/userinfo.email",
+				"https://www.googleapis.com/auth/userinfo.profile",
+				"https://www.googleapis.com/auth/drive",
+				"https://www.googleapis.com/auth/drive.readonly",
 				"https://www.googleapis.com/auth/drive.file",
 			},
 		}, nil
@@ -545,6 +549,7 @@ func storeCredentialsInSecret(ctx context.Context, projectName, sessionName, pro
 	}
 
 	// Calculate expiry time in ISO 8601 format as expected by workspace-mcp
+	// workspace-mcp expects timezone-naive format like Python's datetime.isoformat()
 	expiryTime := time.Now().Add(time.Duration(expiresIn) * time.Second)
 
 	// Prepare credentials JSON in the format expected by workspace-mcp
@@ -555,7 +560,7 @@ func storeCredentialsInSecret(ctx context.Context, projectName, sessionName, pro
 		"client_id":     providerConfig.ClientID,
 		"client_secret": providerConfig.ClientSecret,
 		"scopes":        providerConfig.Scopes,
-		"expiry":        expiryTime.Format(time.RFC3339),
+		"expiry":        expiryTime.Format("2006-01-02T15:04:05"), // Timezone-naive format for Python compatibility
 	}
 
 	credentialsJSON, err := json.MarshalIndent(credentials, "", "  ")

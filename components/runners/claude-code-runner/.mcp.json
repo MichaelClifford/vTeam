@@ -20,9 +20,9 @@
       ],
       "env": {
         "GOOGLE_MCP_CREDENTIALS_DIR": "${GOOGLE_MCP_CREDENTIALS_DIR}",
-        "EXTERNAL_OAUTH21_PROVIDER": "true",
-        "MCP_ENABLE_OAUTH21": "true",
-        "WORKSPACE_MCP_STATELESS_MODE": "true"
+        "MCP_SINGLE_USER_MODE": "1",
+        "GOOGLE_OAUTH_CLIENT_ID": "${GOOGLE_OAUTH_CLIENT_ID}",
+        "GOOGLE_OAUTH_CLIENT_SECRET": "${GOOGLE_OAUTH_CLIENT_SECRET}"
       }
     }
   }
